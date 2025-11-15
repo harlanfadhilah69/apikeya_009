@@ -1,79 +1,97 @@
 const express = require('express');
 const path = require('path');
 const crypto = require('crypto');
+const mysql = require('mysql2'); // <-- DITAMBAHKAN
 const app = express();
 const port = 3000;
 
-// Middleware Penting: Mengizinkan Express membaca body request JSON/URL-encoded
-app.use(express.json()); 
-app.use(express.urlencoded({ extended: true })); 
+// --- 1. KONFIGURASI DAN KONEKSI DATABASE ---
+const db = mysql.createConnection({
+    host: '172.27.208.1', 
+    user: 'root',
+    port: 3308, // <--- REKOMENDASI: KEMBALIKAN KE 3306, ATAU UBAH SESUAI KONFIGURASI ANDA
+    password: 'harlan$12',
+    database: 'api_key'
+});
 
-// Menyajikan file statis dari folder 'public'
+db.connect((err) => {
+    if (err) {
+        console.error('--- KRITIS: KONEKSI DATABASE GAGAL ---');
+        console.error('Error connecting to MySQL:', err.message);
+        console.error('PASTIKAN MySQL SERVER ANDA BERJALAN di port ' + db.config.port);
+        // Biarkan Node.js berjalan, tetapi rute /create akan error
+        return; 
+    }
+    console.log('✅ Successfully connected to MySQL database (api_key).');
+});
+// --- Akhir Bagian Database ---
+
+// Middleware untuk membaca JSON body
+app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Rute GET untuk menyajikan halaman utama (index.html)
+// --- 'VARIABEL' Set DIHAPUS ---
+// const validApiKeys = new Set(); // <-- Dihapus, diganti database
+
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// --- Rute POST: Membuat API Key ---
+// --- 2. MODIFIKASI ENDPOINT /create ---
 app.post('/create', (req, res) => {
     try {
-        const username = req.body.username || 'Anonim'; 
-        
-        // Buat 32 byte angka acak yang aman
         const randomBytes = crypto.randomBytes(32);
-        const rawToken = randomBytes.toString('base64url'); 
-        const finalApiKey = `mh_${rawToken}`; // Contoh prefix
+        const token = randomBytes.toString('base64url');
+        const stamp = Date.now().toString();
+        let apiKey = 'jayjo_' + `${token}_${stamp}`;
 
-        // Di sini seharusnya ada logika penyimpanan ke database
-        console.log(`[SERVER] API Key baru dibuat untuk ${username}: ${finalApiKey}`);
+        // Ganti validApiKeys.add() dengan INSERT ke database
+        const sqlQuery = 'INSERT INTO api_key (KeyValue) VALUES (?)';
 
-        res.status(201).json({ 
-            success: true,
-            apiKey: finalApiKey,
-            message: 'API Key berhasil dibuat dan siap disalin.'
+        db.query(sqlQuery, [apiKey], (err, results) => {
+            if (err) {
+                console.error('Gagal menyimpan API key ke DB:', err);
+                return res.status(500).json({ error: 'Gagal menyimpan key di server' });
+            }
+            
+            console.log('Key baru disimpan ke database:', apiKey);
+            res.status(200).json({ apiKey: apiKey });
         });
-        
+
     } catch (error) {
-        console.error('Error saat membuat API Key:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Terjadi kesalahan server saat membuat API Key.' 
-        });
+        console.error('Gagal membuat API key (crypto error):', error);
+        res.status(500).json({ error: 'Gagal membuat API key di server' });
     }
 });
-  
-// --- Rute POST: Memvalidasi API Key ---
-app.post('/validate', (req, res) => {
+
+// --- 3. MODIFIKASI ENDPOINT /check ---
+app.post('/check', (req, res) => {
     const { apiKey } = req.body;
 
     if (!apiKey) {
-        return res.status(400).json({ success: false, message: 'API Key diperlukan untuk validasi.' });
+        return res.status(400).json({ error: 'API key tidak ada di body' });
     }
-    
-    // Logika Validasi (Sederhana untuk demo):
-    const isValidPrefix = apiKey.startsWith('mh_');
-    const isValidLength = apiKey.length >= 45; 
 
-    if (isValidPrefix && isValidLength) {
-        console.log(`[SERVER] API Key ${apiKey} VALID.`);
-        return res.status(200).json({ 
-            success: true, 
-            message: 'Kunci VALID dan AKTIF.',
-            status: 'Active' 
-        });
-    } else {
-        console.log(`[SERVER] API Key ${apiKey} TIDAK VALID.`);
-        return res.status(403).json({ 
-            success: false, 
-            message: 'Kunci TIDAK VALID. Format salah atau tidak terdaftar.',
-            status: 'Inactive' 
-        });
-    }
+    // Ganti validApiKeys.has() dengan SELECT dari database
+    const sqlQuery = 'SELECT COUNT(*) AS count FROM api_key WHERE KeyValue = ?';
+
+    db.query(sqlQuery, [apiKey], (err, results) => {
+        if (err) {
+            console.error('Gagal mengecek API key:', err);
+            return res.status(500).json({ error: 'Gagal memvalidasi key di server' });
+        }
+
+        // results[0].count akan berisi 0 (jika tidak ada) atau 1 (jika ada)
+        if (results[0].count > 0) {
+            // Ditemukan, key valid
+            res.status(200).json({ valid: true, message: 'API key valid' });
+        } else {
+            // Tidak ditemukan, key tidak valid
+            res.status(401).json({ valid: false, message: 'API key tidak valid' });
+        }
+    });
 });
 
-// Menjalankan server
 app.listen(port, () => {
-    console.log(`Server berjalan di http://localhost:${port}`); 
+    console.log(`Server berjalan di http://localhost:${port}`);
 });
